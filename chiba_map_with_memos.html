@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>千葉市シンプルマップ＋メモ</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+ integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<style>
+*{box-sizing:border-box}html,body{height:100%;margin:0;font-family:system-ui,-apple-system,"Noto Sans JP",sans-serif;color:#18212b}
+body{display:flex;flex-direction:column;background:#f7f8fa}
+header{padding:11px 15px;background:#fff;border-bottom:1px solid #dce1e6;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+h1{font-size:18px;margin:0}.sub{font-size:12px;color:#5e6a75}.hint{margin-left:auto;font-size:12px;color:#65717c}
+#map{flex:1;min-height:280px;width:100%}
+footer{padding:8px 12px;font-size:12px;background:#fff;border-top:1px solid #dce1e6;color:#45515d}
+footer a{color:#145db5}
+.leaflet-popup-content{min-width:180px}.memo-text{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}
+.popup-actions{display:flex;gap:8px}.popup-actions button{border:1px solid #ccd3da;background:#f8fafc;border-radius:7px;padding:6px 10px;cursor:pointer}
+#modal{position:fixed;inset:0;background:#0006;display:none;align-items:center;justify-content:center;z-index:2000;padding:16px}
+#panel{background:white;width:min(420px,100%);padding:18px;border-radius:14px;box-shadow:0 12px 40px #0003}
+#panel h2{font-size:18px;margin:0 0 8px}#coords{font-size:12px;color:#66717c;margin-bottom:12px}
+textarea{width:100%;min-height:110px;resize:vertical;border:1px solid #cbd2d9;border-radius:8px;padding:10px;font:inherit}
+.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+button{font:inherit;cursor:pointer}.actions button{padding:8px 13px;border-radius:8px;border:1px solid #cbd2d9;background:#fff}
+.actions .save{background:#1769aa;color:white;border-color:#1769aa}
+@media(max-width:600px){header{align-items:flex-start;flex-direction:column;gap:4px}.hint{margin-left:0}}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>千葉市シンプルマップ＋メモ</h1><div class="sub">地図を長押しして、場所にメモを追加</div></div>
+  <div class="hint">マーカーをタップするとメモを確認できます</div>
+</header>
+<div id="map" aria-label="千葉市の地図"></div>
+<footer>
+  地図データ © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a>
+  （<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">著作権・ライセンス情報</a>）
+  <span> | メモはこのブラウザ内に保存されます。地図表示にはインターネット接続が必要です。</span>
+</footer>
+<div id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+ <div id="panel">
+  <h2 id="modal-title">この場所にメモ</h2>
+  <div id="coords"></div>
+  <textarea id="memoInput" maxlength="1000" placeholder="例：この路地を通ると公園に抜けられる"></textarea>
+  <div class="actions"><button id="cancel">キャンセル</button><button class="save" id="save">保存</button></div>
+ </div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+ integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+(() => {
+  const center = [35.6074, 140.1065];
+  const map = L.map('map', {center, zoom:13, minZoom:10, maxZoom:19});
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom:19,
+    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'
+  }).addTo(map);
+
+  const bounds = L.latLngBounds([35.48,139.95],[35.75,140.25]);
+  map.setMaxBounds(bounds.pad(.15));
+  map.on('drag', () => map.panInsideBounds(bounds.pad(.15), {animate:false}));
+
+  const storageKey = 'chiba-simple-map-memos-v1';
+  const markers = new Map();
+  let selectedLatLng = null;
+  const modal = document.getElementById('modal');
+  const input = document.getElementById('memoInput');
+  const coords = document.getElementById('coords');
+
+  function loadMemos() {
+    try { return JSON.parse(localStorage.getItem(storageKey) || '[]'); }
+    catch (_) { return []; }
+  }
+  function saveMemos(items) {
+    try { localStorage.setItem(storageKey, JSON.stringify(items)); }
+    catch (_) { alert('このブラウザでは保存できませんでした。'); }
+  }
+  function openEditor(latlng) {
+    selectedLatLng = latlng;
+    coords.textContent = `緯度 ${latlng.lat.toFixed(5)} / 経度 ${latlng.lng.toFixed(5)}`;
+    input.value = '';
+    modal.style.display = 'flex';
+    setTimeout(() => input.focus(), 0);
+  }
+  function closeEditor() { modal.style.display = 'none'; selectedLatLng = null; }
+  function renderMemo(memo) {
+    const marker = L.marker([memo.lat, memo.lng]).addTo(map);
+    const wrapper = document.createElement('div');
+    const text = document.createElement('div');
+    text.className = 'memo-text';
+    text.textContent = memo.text;
+    const date = document.createElement('small');
+    date.textContent = new Date(memo.createdAt).toLocaleString('ja-JP');
+    const actions = document.createElement('div');
+    actions.className = 'popup-actions';
+    const edit = document.createElement('button');
+    edit.textContent = '編集';
+    edit.addEventListener('click', () => {
+      closeEditor();
+      openEditor({lat:memo.lat,lng:memo.lng});
+      input.value = memo.text;
+      document.getElementById('save').dataset.editId = memo.id;
+    });
+    const del = document.createElement('button');
+    del.textContent = '削除';
+    del.addEventListener('click', () => {
+      if (!confirm('このメモを削除しますか？')) return;
+      const updated = loadMemos().filter(x => x.id !== memo.id);
+      saveMemos(updated);
+      marker.remove(); markers.delete(memo.id);
+    });
+    actions.append(edit,del);
+    wrapper.append(text,date,document.createElement('br'),actions);
+    marker.bindPopup(wrapper);
+    markers.set(memo.id, marker);
+  }
+  loadMemos().forEach(renderMemo);
+
+  // 長押し操作。タッチでは約550ms、マウスでは右クリックでも追加可能。
+  let pressTimer = null, startPoint = null, didLongPress = false;
+  map.on('mousedown touchstart', (e) => {
+    didLongPress = false;
+    startPoint = e.latlng;
+    clearTimeout(pressTimer);
+    pressTimer = setTimeout(() => {
+      didLongPress = true;
+      openEditor(startPoint);
+    }, 550);
+  });
+  map.on('mouseup touchend mouseout', () => clearTimeout(pressTimer));
+  map.on('mousemove touchmove', (e) => {
+    if (!startPoint || !e.latlng) return;
+    if (map.distance(startPoint,e.latlng) > 18) clearTimeout(pressTimer);
+  });
+  map.on('contextmenu', e => { e.originalEvent.preventDefault(); openEditor(e.latlng); });
+
+  document.getElementById('cancel').addEventListener('click', () => {
+    delete document.getElementById('save').dataset.editId;
+    closeEditor();
+  });
+  document.getElementById('save').addEventListener('click', () => {
+    const text = input.value.trim();
+    if (!text) { alert('メモを入力してください。'); return; }
+    const saveButton = document.getElementById('save');
+    const editId = saveButton.dataset.editId;
+    let items = loadMemos();
+    if (editId) {
+      items = items.map(x => x.id === editId ? {...x,text} : x);
+      const old = markers.get(editId);
+      if (old) { old.remove(); markers.delete(editId); }
+      delete saveButton.dataset.editId;
+    } else {
+      items.push({
+        id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()),
+        lat:selectedLatLng.lat, lng:selectedLatLng.lng, text, createdAt:Date.now()
+      });
+    }
+    saveMemos(items);
+    markers.clear();
+    map.eachLayer(layer => { if (layer instanceof L.Marker) map.removeLayer(layer); });
+    items.forEach(renderMemo);
+    closeEditor();
+  });
+  modal.addEventListener('click', e => { if (e.target === modal) closeEditor(); });
+})();
+</script>
+</body>
+</html>
